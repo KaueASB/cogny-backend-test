@@ -1,3 +1,4 @@
+const axios = require('axios');
 const { DATABASE_SCHEMA, DATABASE_URL, SHOW_PG_MONITOR } = require('./config');
 const massive = require('massive');
 const monitor = require('pg-monitor');
@@ -20,8 +21,8 @@ const monitor = require('pg-monitor');
         noWarnings: true,
         error: function (err, client) {
             console.log(err);
-            //process.emit('uncaughtException', err);
-            //throw err;
+            // process.emit('uncaughtException', err);
+            // throw err;
         }
     });
 
@@ -65,10 +66,18 @@ const monitor = require('pg-monitor');
     try {
         await migrationUp();
 
+        const { data: { data, source } } = await axios.get('https://datausa.io/api/data?drilldowns=Nation&measures=Population');
+
+        const formattedData = JSON.stringify(data);
+
         //exemplo de insert
         const result1 = await db[DATABASE_SCHEMA].api_data.insert({
-            doc_record: { 'a': 'b' },
+            api_name: source[0].name,
+            doc_id: source[0].annotations.table_id,
+            doc_name: source[0].annotations.dataset_name,
+            doc_record: formattedData,
         })
+
         console.log('result1 >>>', result1);
 
         //exemplo select
@@ -76,6 +85,34 @@ const monitor = require('pg-monitor');
             is_active: true
         });
         console.log('result2 >>>', result2);
+
+        // cálculo da somatória total de população em memória
+        const records = result2[0].doc_record
+
+        const yearsOfInterest = [2020, 2019, 2018];
+        const filteredData = records.filter(item => yearsOfInterest.includes(Number(item.Year)));
+
+        const sumPopulationInMemory = filteredData.reduce((prev, curr) => {
+            return prev + curr.Population;
+        }, 0);
+
+        // calculo da somatória total de população usando select inline
+        const [sumPopulationUsingSelect] = await db.query(`
+            SELECT SUM((records->>'Population')::integer) AS total_population
+            FROM (
+                SELECT jsonb_array_elements(doc_record) AS records
+                FROM ${DATABASE_SCHEMA}.api_data
+            )
+            WHERE records->>'Year' IN ('2020', '2019', '2018');
+
+        `);
+
+        // calculo da somatória total de população usando view
+        const [sumPopulationUsingView] = await db[DATABASE_SCHEMA].vw_population_summary.find();
+
+        console.log('Somatória total de população feita em memória:', { total_population: sumPopulationInMemory });
+        console.log('Somatória total de população feita usando select inline::', sumPopulationUsingSelect);
+        console.log('Somatória total de população feita usando view::', sumPopulationUsingView);
 
     } catch (e) {
         console.log(e.message)
